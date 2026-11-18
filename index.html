@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>微信聊天截图生成器</title>
+<style>html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center;background:#f2f3f5;font:14px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#4e5969}</style>
+</head>
+<body>
+<div>正在打开…</div>
+<script>
+  var ua = navigator.userAgent || '';
+  var mobile = /Android|iPhone|iPad|iPod|Mobile|MicroMessenger/i.test(ua) || window.innerWidth < 720;
+  location.replace(mobile ? 'm.html' : 'pc.html');
+</script>
+</body>
+</html>
