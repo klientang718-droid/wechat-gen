@@ -526,6 +526,7 @@
       <select id="convoSel" title="切换当前编辑的群聊会话"></select>
       <button class="mini" id="convoNew" title="新建一个群聊会话">＋ 会话</button>
       <button class="mini" id="convoDel" title="删除当前会话">删除</button>
+      <span id="saveStatus" style="font-size:11px;color:#0f7b3f;white-space:nowrap">已保存</span>
     </div>
 
     <div class="tabs">
@@ -4602,12 +4603,12 @@ function finishScript(my) {
   }
 }
 
-function toast(msg) {
+function toast(msg, ms) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.add('on');
   clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.remove('on'), 1600);
+  el._t = setTimeout(() => el.classList.remove('on'), Math.max(1600, +ms || 1600));
 }
 
 // 每次播放/录制都换一个令牌：旧的动画帧自动作废，再点一次就能重播，不会卡死在「无响应」
@@ -5452,12 +5453,13 @@ const DB_NAME = 'chatgen-fs', STORE = 'dir';
 
 function idb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open(DB_NAME, 3);
+    const r = indexedDB.open(DB_NAME, 4);
     r.onupgradeneeded = () => {
       const db = r.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
       if (!db.objectStoreNames.contains('avatars')) db.createObjectStore('avatars');
       if (!db.objectStoreNames.contains('msgimg')) db.createObjectStore('msgimg');
+      if (!db.objectStoreNames.contains('backup')) db.createObjectStore('backup');
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -5822,8 +5824,80 @@ function delConvo(i) {
   toast('已删除会话');
 }
 
+// ===== 保存反馈与自动备份（阶段 0.5）=====
+let saveStatus = 'ok';        // ok | quota | fail
+let lastSaveToast = 0;        // 提示节流
+function markSaveStatus(st, msg) {
+  saveStatus = st;
+  const el = document.getElementById('saveStatus');
+  if (el) {
+    el.textContent = st === 'ok' ? '已保存' : (st === 'quota' ? '空间不足' : '保存失败');
+    el.style.color = st === 'ok' ? '#0f7b3f' : '#f53f3f';
+  }
+  if (st === 'ok') return;
+  const now = Date.now();
+  if (now - lastSaveToast < 4000) return;   // 同一状态 4 秒内只提示一次
+  lastSaveToast = now;
+  toast(msg, 6000);
+}
+// 把一份 JSON 备份到 IndexedDB（不受 localStorage 5MB 限制）
+async function backupState(json) {
+  try {
+    const db = await idb();
+    await new Promise((res, rej) => {
+      const t = db.transaction('backup', 'readwrite');
+      t.objectStore('backup').put({ json, at: Date.now() }, 'latest');
+      t.oncomplete = res;
+      t.onerror = () => rej(t.error || new Error('backup failed'));
+    });
+    return true;
+  } catch (e) {
+    markSaveStatus('fail', '自动备份失败：' + ((e && e.message) || e) + '，请立刻点「存档」导出备份');
+    return false;
+  }
+}
 function saveState() {
-  try { syncCurConvo(); dataVersion++; localStorage.setItem('chatgen-state', JSON.stringify(S)); } catch (e) {}
+  try {
+    syncCurConvo();
+    dataVersion++;
+    const json = JSON.stringify(S);
+    try {
+      localStorage.setItem('chatgen-state', json);
+    } catch (e) {
+      const s = String((e && e.name) || '') + ' ' + String((e && e.message) || '');
+      const quota = /quota|QuotaExceeded|exceeded/i.test(s);
+      markSaveStatus(quota ? 'quota' : 'fail',
+        quota
+          ? '本地存储空间不足！本次修改没能存进浏览器。请点「存档」导出文件备份，并删掉一些图片后重试。'
+          : '保存失败：' + ((e && e.message) || e));
+      backupState(json);   // 至少把这一版备份到 IndexedDB
+      return;
+    }
+    markSaveStatus('ok');
+    backupState(json);     // 成功写入后同步备份（异步，不阻塞）
+  } catch (e) {
+    markSaveStatus('fail', '保存异常：' + ((e && e.message) || e));
+  }
+}
+// 启动时：本地数据不可用时，尝试从 IndexedDB 备份恢复
+async function tryRestoreFromBackup() {
+  try {
+    const db = await idb();
+    const rec = await new Promise(res => {
+      const rq = db.transaction('backup', 'readonly').objectStore('backup').get('latest');
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => res(null);
+    });
+    if (!rec || !rec.json) return false;
+    const obj = JSON.parse(rec.json);
+    applyStateObject(obj);
+    saveState();
+    renderAll();
+    renderTimeline();
+    render(null);
+    toast('本地数据异常，已从自动备份恢复（' + new Date(rec.at).toLocaleString() + '）');
+    return true;
+  } catch (e) { return false; }
 }
 function loadState() {
   try {
@@ -7160,6 +7234,8 @@ document.getElementById('pickdir').addEventListener('click', async () => {
 
 // 先把存过的群信息、头像、撤回历史读回来
 loadState();
+// 本地数据为空或损坏时，尝试从 IndexedDB 自动备份恢复（阶段 0.5）
+if (!localStorage.getItem('chatgen-state')) { tryRestoreFromBackup(); }
 loadHistory();
 syncCurConvo();               // 确保至少一个会话（全新打开时）
 document.getElementById('gtitle').value = S.title;
