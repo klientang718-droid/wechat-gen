@@ -852,7 +852,9 @@ function setAvatar(name, blob) {
 }
 
 function drawAvatar(ctx, name, x, y, size) {
-  const img = AVATARS.get(name);
+  // 阶段 1：优先按角色 ID 找头像，找不到再退回按昵称（兼容旧项目）
+  const _k = (typeof avatarKeyOf === 'function') ? avatarKeyOf(name) : name;
+  const img = AVATARS.get(_k) || AVATARS.get(name);
   if (img && img.complete && img.naturalWidth) {
     ctx.save();
     rr(ctx, x, y, size, size, 5);
@@ -5739,6 +5741,7 @@ const S = {
   openApps: [],       // 时间线里的「回桌面 / 打开相机」行动：[{time:'12:00', app:'home'|'camera'|'wechat'}]
   waitKeys: [],       // 「按任意键开始」指令：[{time:'12:00'}]
   postMoments: [],    // 本人发朋友圈：[{time, text, img, likes:[{who,time}], comments:[{who,text,reply,time}]}]
+  characters: [],     // 全局角色表：[{id, name, avatarKey}]  —— 阶段 1
   camMedia: '',       // 相机取景画面（图片 base64）
   camMediaType: '',   // 'image' | 'video'
   wallpaper: ''       // 手机主界面壁纸（base64，留空用渐变）
@@ -5942,6 +5945,7 @@ function applyStateObject(o) {
     if (Array.isArray(o.postMoments)) S.postMoments = o.postMoments.filter(a => a && typeof a === 'object');
     if (o.tlOrder && typeof o.tlOrder === 'object') S.tlOrder = o.tlOrder;
     if (Array.isArray(o.tlSeq)) S.tlSeq = o.tlSeq.filter(k => typeof k === 'string');
+    if (Array.isArray(o.characters)) S.characters = o.characters.filter(c => c && c.id && c.name);
     if (typeof o.camMedia === 'string') S.camMedia = o.camMedia;
     if (typeof o.camMediaType === 'string') S.camMediaType = o.camMediaType;
     if (typeof o.wallpaper === 'string') S.wallpaper = o.wallpaper;
@@ -6158,6 +6162,45 @@ function renderTimeline() {
 
 /* ============ 朋友圈：设置列表 ============ */
 // 所有群聊里的成员（去重）：朋友圈的「谁发的」从这里选，头像就能对上
+/* ============ 阶段 1：全局角色表 ============ */
+function charId() {
+  return 'ch_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+// 按名字找角色（没有就建一个）
+function ensureCharacter(name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  if (!Array.isArray(S.characters)) S.characters = [];
+  let c = S.characters.find(x => x.name === n);
+  if (!c) {
+    c = { id: charId(), name: n, avatarKey: 'char_' + charId() };
+    S.characters.push(c);
+  }
+  return c;
+}
+// 从现有数据（各群成员 / 消息 sender / 朋友圈作者）迁移生成角色表
+function migrateCharacters() {
+  if (!Array.isArray(S.characters)) S.characters = [];
+  const names = new Set();
+  (S.convos || []).forEach(c => (c.members || []).forEach(n => { if (n && String(n).trim()) names.add(String(n).trim()); }));
+  (S.members || []).forEach(n => { if (n && String(n).trim()) names.add(String(n).trim()); });
+  (S.msgs || []).forEach(m => { if (m && m.who && String(m.who).trim()) names.add(String(m.who).trim()); });
+  (S.moments || []).forEach(m => { if (m && m.who && String(m.who).trim()) names.add(String(m.who).trim()); });
+  if (S.self && String(S.self).trim()) names.add(String(S.self).trim());
+  let added = 0;
+  names.forEach(n => {
+    if (!S.characters.some(c => c.name === n)) {
+      S.characters.push({ id: charId(), name: n, avatarKey: 'char_' + charId() });
+      added++;
+    }
+  });
+  return added;
+}
+// 角色头像的存储 key（阶段 1 起优先用角色 ID；旧的按昵称仍然兼容）
+function avatarKeyOf(name) {
+  const c = (S.characters || []).find(x => x.name === name);
+  return c ? c.avatarKey : String(name || '');
+}
 function allMembers() {
   const set = new Set();
   S.convos.forEach(c => (c.members || []).forEach(n => { if (n && String(n).trim()) set.add(n); }));
@@ -6550,16 +6593,21 @@ async function applyAvatar(n, f) {
   if (await setAvatar(n, f)) {
     AVABLOBS.set(n, f);
     await putAvatar(n, f);
+    // 阶段 1：同时按角色 ID 存一份，同名成员不会互相覆盖
+    const ck1 = avatarKeyOf(n);
+    if (ck1 && ck1 !== n && AVATARS.has(n)) { AVATARS.set(ck1, AVATARS.get(n)); AVABLOBS.set(ck1, f); await putAvatar(ck1, f); }
     renderMembers();
     render(null);
     toast('已设置「' + n + '」的头像');
   } else toast('这张图读不出来，换一张试试');
 }
 async function clearAvatar(n) {
-  if (!AVATARS.has(n)) return;
+  const ck2 = avatarKeyOf(n);
+  if (!AVATARS.has(n) && !(ck2 && AVATARS.has(ck2))) return;
   AVATARS.delete(n);
   AVABLOBS.delete(n);
   dropAvatar(n);
+  if (ck2 && ck2 !== n) { AVATARS.delete(ck2); AVABLOBS.delete(ck2); dropAvatar(ck2); }
   renderMembers();
   renderMsgs();
   render(null);
@@ -7236,6 +7284,8 @@ document.getElementById('pickdir').addEventListener('click', async () => {
 loadState();
 // 本地数据为空或损坏时，尝试从 IndexedDB 自动备份恢复（阶段 0.5）
 if (!localStorage.getItem('chatgen-state')) { tryRestoreFromBackup(); }
+// 阶段 1：把现有成员/消息/朋友圈迁移到全局角色表
+if (migrateCharacters() > 0) { saveState(); }
 loadHistory();
 syncCurConvo();               // 确保至少一个会话（全新打开时）
 document.getElementById('gtitle').value = S.title;
