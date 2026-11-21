@@ -532,6 +532,7 @@
     <div class="tabs">
       <button class="tab on" data-tab="chat">微信聊天</button>
       <button class="tab" data-tab="moments">朋友圈</button>
+      <button class="tab" data-tab="chars">角色</button>
       <button class="tab" data-tab="tl">时间线</button>
       <button class="tab mob" data-tab="pv">预览</button>
     </div>
@@ -603,6 +604,7 @@
         <div class="memtip"><b>一键生成成员</b>：选人数，随机生成昵称和头像；点小图可单独换</div>
         <div class="memlist" id="memlist"></div>
         <button class="memadd" id="memadd">＋ 添加成员</button>
+        <button class="memadd" id="memaddFromChars" style="margin-top:6px">＋ 从角色库添加</button>
       </div>
       <select id="ratio">
         <option value="9:16">9:16 抖音竖屏（1080×1920）</option>
@@ -654,6 +656,15 @@
       <button class="ghost" id="save">导出 PNG</button>
       <button class="ghost" id="pickdir">保存位置</button>
     </div>
+    <section class="tabpane" id="tab-chars">
+      <div class="msgtools">
+        <button class="mini" id="charAdd">＋ 新建角色</button>
+        <button class="mini" id="charImport" title="把现有群成员、消息发送者全部导入角色表">从现有数据导入</button>
+      </div>
+      <div class="memlist" id="charList"></div>
+      <div class="mnote">角色是全局的：改一次名字或头像，所有群聊、朋友圈、通知都会同步。</div>
+    </section>
+
     <section class="tabpane" id="tab-tl">
       <div class="msgtools" style="margin-bottom:6px;">
         <button class="mini" id="saveProject" title="把整个项目（所有群聊 + 朋友圈 + 全部指令）导出成一个文件">💾 存档</button>
@@ -6201,7 +6212,124 @@ function avatarKeyOf(name) {
   const c = (S.characters || []).find(x => x.name === name);
   return c ? c.avatarKey : String(name || '');
 }
-function allMembers() {
+/* ============ 阶段 1：角色管理界面 ============ */
+// 统计某个名字被引用的次数（群成员 / 消息 / 朋友圈）
+function charRefCount(name) {
+  let n = 0;
+  (S.convos || []).forEach(c => { if ((c.members || []).indexOf(name) >= 0) n++; });
+  (S.msgs || []).forEach(m => { if (m && m.who === name) n++; });
+  (S.moments || []).forEach(m => { if (m && m.who === name) n++; });
+  return n;
+}
+function renderChars() {
+  const box = document.getElementById('charList');
+  if (!box) return;
+  if (!Array.isArray(S.characters)) S.characters = [];
+  box.innerHTML = '';
+  if (!S.characters.length) {
+    box.innerHTML = '<div class="empty" style="padding:10px 4px;font-size:12px">还没有角色<br>点「从现有数据导入」或「新建角色」</div>';
+    return;
+  }
+  S.characters.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'mem';
+    const av = document.createElement('div');
+    av.className = 'memav';
+    paintAv(av, c.name);
+    av.title = '点击更换头像';
+    av.addEventListener('click', () => pickAvatarFor(c.name));
+    const inp = document.createElement('input');
+    inp.className = 'memname';
+    inp.value = c.name;
+    inp.title = '改名后，所有群聊和朋友圈会同步';
+    inp.addEventListener('change', () => renameChar(c.id, inp.value));
+    const tag = document.createElement('span');
+    const refs = charRefCount(c.name);
+    tag.textContent = refs ? ('引用 ' + refs) : '未使用';
+    tag.style.cssText = 'font-size:10px;color:#86909c;white-space:nowrap';
+    const del = document.createElement('button');
+    del.className = 'mop del';
+    del.textContent = '×';
+    del.title = '删除角色';
+    del.addEventListener('click', () => delChar(c.id));
+    el.append(av, inp, tag, del);
+    box.appendChild(el);
+  });
+}
+function addChar() {
+  if (!Array.isArray(S.characters)) S.characters = [];
+  let k = 1, nm = '新角色';
+  while (S.characters.some(c => c.name === nm)) nm = '新角色' + (++k);
+  S.characters.push({ id: charId(), name: nm, avatarKey: 'char_' + charId() });
+  saveState();
+  renderChars();
+  toast('已新建「' + nm + '」，可以改名和换头像');
+}
+function renameChar(id, raw) {
+  const n = String(raw || '').trim();
+  const c = (S.characters || []).find(x => x.id === id);
+  if (!c) return;
+  if (!n || n === c.name) { renderChars(); return; }
+  if (S.characters.some(x => x.id !== id && x.name === n)) { toast('已经有同名角色了'); renderChars(); return; }
+  const old = c.name;
+  pushHistory('角色改名「' + old + '」');
+  // 1) 改角色表
+  c.name = n;
+  // 2) 把所有引用旧名字的地方同步过去
+  (S.convos || []).forEach(cv => {
+    cv.members = (cv.members || []).map(x => x === old ? n : x);
+  });
+  (S.members || []).forEach((x, i) => { if (x === old) S.members[i] = n; });
+  (S.msgs || []).forEach(m => { if (m && m.who === old) m.who = n; });
+  (S.moments || []).forEach(m => {
+    if (!m) return;
+    if (m.who === old) m.who = n;
+    (m.likes || []).forEach((x, i) => { if (x === old) m.likes[i] = n; });
+    (m.comments || []).forEach(x => { if (x && x.who === old) x.who = n; });
+  });
+  if (S.self === old) S.self = n;
+  // 3) 头像跟着走
+  if (AVATARS.has(old) && !AVATARS.has(n)) {
+    AVATARS.set(n, AVATARS.get(old));
+    const b = AVABLOBS.get(old);
+    if (b) { AVABLOBS.set(n, b); putAvatar(n, b); }
+  }
+  saveState();
+  renderChars();
+  renderMembers();
+  renderMsgs();
+  renderTimeline();
+  render(null);
+  toast('已改名为「' + n + '」，所有引用都同步了');
+}
+function doDelChar(id) {
+  const c = (S.characters || []).find(x => x.id === id);
+  if (!c) return;
+  pushHistory('删除角色「' + c.name + '」');
+  S.characters = S.characters.filter(x => x.id !== id);
+  saveState();
+  renderChars();
+  toast('已删除角色「' + c.name + '」');
+}
+function delChar(id) {
+  const c = (S.characters || []).find(x => x.id === id);
+  if (!c) return;
+  const refs = charRefCount(c.name);
+  if (refs > 0) {
+    showChoice('「' + c.name + '」还被引用 ' + refs + ' 次', [
+      ['仍然删除（引用保留原名字）', 'danger'],
+      ['取消', 'ghost']
+    ], (i) => { if (i === 0) doDelChar(id); });
+    return;
+  }
+  doDelChar(id);
+}
+function importChars() {
+  const n = migrateCharacters();
+  saveState();
+  renderChars();
+  toast(n ? ('已导入 ' + n + ' 个角色') : '角色表已经是最新的');
+}function allMembers() {
   const set = new Set();
   S.convos.forEach(c => (c.members || []).forEach(n => { if (n && String(n).trim()) set.add(n); }));
   (S.members || []).forEach(n => { if (n && String(n).trim()) set.add(n); });
@@ -6440,7 +6568,8 @@ function redo() {
 }
 
 function paintAv(el, n) {
-  const img = AVATARS.get(n);
+  const pk = (typeof avatarKeyOf === 'function') ? avatarKeyOf(n) : n;
+  const img = AVATARS.get(pk) || AVATARS.get(n);
   if (img) {
     el.style.background = '#dfe3e8';
     el.style.backgroundImage = 'url(' + img.src + ')';
@@ -7408,6 +7537,7 @@ document.querySelectorAll('.tab').forEach(t => {
     document.body.classList.remove('pv');
     document.querySelectorAll('.tabpane').forEach(p => p.classList.toggle('on', p.id === 'tab-' + k));
     if (k === 'moments') renderMomentsUI();
+    if (k === 'chars') renderChars();
   });
 });
 // 微信聊天 内的子标签：群消息 / 群设置
@@ -7505,6 +7635,23 @@ function loadProjectFile(file) {
   };
   r.readAsText(file);
 }
+document.getElementById('charAdd').addEventListener('click', addChar);
+document.getElementById('memaddFromChars').addEventListener('click', () => {
+  const names = (S.characters || []).map(c => c.name).filter(n => S.members.indexOf(n) < 0);
+  if (!names.length) { toast('角色库为空，或已经全部加进这个群了'); return; }
+  showChoice('把哪个角色加进「' + (S.title || '本群') + '」？', names.map(n => [n, 'ghost']), (i) => {
+    const nm = names[i];
+    pushHistory('从角色库添加「' + nm + '」');
+    const at = S.members.includes(S.self) ? S.members.length - 1 : S.members.length;
+    S.members.splice(at, 0, nm);
+    saveState();
+    renderMembers();
+    renderMsgs();
+    render(null);
+    toast('已把「' + nm + '」加入本群');
+  });
+});
+document.getElementById('charImport').addEventListener('click', importChars);
 document.getElementById('saveProject').addEventListener('click', saveProject);
 document.getElementById('loadProject').addEventListener('click', () => {
   const inp = document.createElement('input');
