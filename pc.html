@@ -320,6 +320,7 @@
   .mcard { border: 1px solid #e5e6eb; border-radius: 10px; padding: 8px; background: #fff; }
   .mcard.tcard { background: #f7f8fa; border-style: dashed; }
   .mcard.scard { background: #fbfbfc; }
+  .mcard.ncard { background: #fbfaf7; border-color: #ece7dc; }
   .mcard.self { border-color: #b7e6c9; background: #f8fdfa; }
   .mhead { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
   .mav {
@@ -545,6 +546,7 @@
       <div class="subpane on" id="sub-msg">
       <div class="msgtools">
         <button class="mini" id="addmsg">＋ 消息</button>
+        <button class="mini" id="addnarr" title="插入居中的小说式旁白：文字或图片，跟消息一起按时间线排序">＋ 旁白</button>
         <button class="mini" id="addtime">＋ 时间</button>
         <button class="mini" id="ioBtn">导入 / 导出</button>
         <button class="mini" id="clearMsgs">清空信息</button>
@@ -618,19 +620,6 @@
       </select>
       <label class="chk" style="justify-content:center; height:36px;"><input type="checkbox" id="dark"> 深色模式（更像夜间微信）</label>
       <label class="chk" style="justify-content:center; height:36px;"><input type="checkbox" id="typingFx" checked> 本人消息模拟真人打字（键盘＋音效）</label>
-      <div class="avatarline">
-        <img id="camPrev" alt="">
-        <span class="avtip">相机取景画面（放一张 AI 恐怖图）</span>
-        <button class="mini" id="camUp">上传</button>
-        <button class="mini" id="camClear">清除</button>
-      </div>
-      <div class="avatarline">
-        <img id="wpPrev" alt="">
-        <span class="avtip">手机主界面壁纸（留空用默认深色）</span>
-        <button class="mini" id="wpUp">上传</button>
-        <button class="mini" id="wpClear">清除</button>
-      </div>
-      <button class="ghost" id="goHome">看手机桌面（桌面 → 相机）</button>
       <button class="ghost" id="clearMem">清空群成员</button>
       <div class="undobar">
         <button class="ubtn" id="undoCfg" title="撤回上一步操作（Ctrl+Z），最多记住 20 步，刷新页面也还在">↶ 撤回 (0)</button>
@@ -820,6 +809,7 @@ function THEME() {
     chrome:    d ? '#191919' : '#ededed',   // 状态栏 / 导航栏 / 输入栏底色
     fg:        d ? '#f0f0f0' : '#1a1a1a',   // 状态栏图标 / 标题
     time:      d ? '#8a8a8a' : '#a3a3a3',   // 时间分隔 / 系统灰字
+    narr:      d ? '#a8a8a8' : '#8a8a8a',   // 旁白灰字（比时间分隔深一点，更像正文注释）
     name:      '#9a9a9a',                   // 群聊昵称灰
     line:      d ? '#2e2e2e' : '#dcdcdc',   // 分隔线
     bubbleL:   d ? '#2c2c2c' : '#ffffff',   // 左侧气泡
@@ -930,6 +920,8 @@ function parse(text) {
     if ((m = line.match(/^时间\s*[|｜:：]\s*(.+)$/))) { statusTime = m[1].trim(); continue; }
     if ((m = line.match(/^--\s*(.+?)\s*--$/))) { msgs.push({ t: 'time', text: m[1] }); lastTime = m[1]; pending = null; continue; }
     if ((m = line.match(/^系统\s*[:：]\s*(.+)$/))) { msgs.push({ t: 'sys', text: m[1] }); pending = null; continue; }
+    if ((m = line.match(/^\[旁白图\]\s*$/))) { msgs.push({ t: 'narrimg', imgKey: '' }); pending = null; continue; }
+    if ((m = line.match(/^\[旁白\]\s*([\s\S]*)$/))) { msgs.push({ t: 'narr', text: m[1] }); pending = null; continue; }
 
     // 「名字 时间」头（如：张三 2026-11-13 09:25）
     if ((m = line.match(new RegExp('^([^\\d:：]{1,12})\\s+(' + TS + ')$')))) {
@@ -1019,12 +1011,84 @@ function drawLines(ctx, lines, x, top, PAD_X, PAD_Y, LH) {
   ctx.textBaseline = 'alphabetic';
 }
 
-function block(ctx, m, y, dry, T) {
+function block(ctx, m, y, dry, T, zoom) {
   T = T || THEME();
   const FONT = '15.5px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
   const NAME_FONT = '11.5px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
   const PAD_X = 12, PAD_Y = 9, LH = 21, AVA = 38, GAP = 9, SIDE = 12;
   const MAXB = W * 0.63;
+
+  // 旁白（文字）：居中灰字，不带头像、不带气泡
+  if (m.t === 'narr') {
+    const NW = W - 76;
+    ctx.font = FONT;
+    const nl = wrap(ctx, m.text || '', NW);
+    const NLH = 26, NPT = 13, NPB = 13;
+    const nh = nl.length * NLH + NPT + NPB;
+    if (!dry) {
+      ctx.font = FONT;
+      ctx.fillStyle = T.narr;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      nl.forEach((l, i) => ctx.fillText(l, W / 2, y + NPT + NLH / 2 + i * NLH));
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+    }
+    return nh + 10;
+  }
+
+  // 旁白（图片）：居中大图，播放时短暂放大让观众看清
+  if (m.t === 'narrimg') {
+    const im = m.imgKey ? MSG_IMAGES.get(m.imgKey) : null;
+    const zN = zoom || 1;
+    let nbw, nbh;
+    if (im && im.complete && im.naturalWidth) {
+      const maxW = W * 0.66, maxH = 250;
+      const s = Math.min(maxW / im.naturalWidth, maxH / im.naturalHeight);
+      nbw = Math.round(Math.max(90, im.naturalWidth * s));
+      nbh = Math.round(Math.max(70, im.naturalHeight * s));
+    } else { nbw = Math.round(W * 0.6); nbh = 170; }
+    const nbx = (W - nbw) / 2;
+    // 放大时把多出来的高度也算进占位，画面整体上移给它让位
+    const nh = nbh + 18 + (zN > 1 ? Math.round(nbh * (zN - 1)) : 0);
+    if (!dry) {
+      const z = zN;
+      const ncy = y + 9;
+      ctx.save();
+      if (z !== 1) {
+        // 以顶边中点为锚点放大：往下、往两侧长，占位已经预留好，不会盖住别的消息
+        ctx.translate(W / 2, ncy);
+        ctx.scale(z, z);
+        ctx.translate(-W / 2, -ncy);
+      }
+      if (im && im.complete && im.naturalWidth) {
+        ctx.save();
+        rr(ctx, nbx, y + 9, nbw, nbh, 8);
+        ctx.clip();
+        const s = Math.max(nbw / im.naturalWidth, nbh / im.naturalHeight);
+        const w = im.naturalWidth * s, hh = im.naturalHeight * s;
+        ctx.drawImage(im, nbx + (nbw - w) / 2, y + 9 + (nbh - hh) / 2, w, hh);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = T.img;
+        rr(ctx, nbx, y + 9, nbw, nbh, 8);
+        ctx.fill();
+        ctx.strokeStyle = T.imgLine;
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([6, 5]);
+        rr(ctx, nbx, y + 9, nbw, nbh, 8);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = T.imgTxt;
+        ctx.font = '12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('图片旁白：在右侧上传一张图', W / 2, y + 9 + nbh / 2);
+        ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      }
+      ctx.restore();
+    }
+    return nh;
+  }
 
   if (m.t === 'time') {
     if (!dry) {
@@ -1130,7 +1194,9 @@ function block(ctx, m, y, dry, T) {
     bubbleH = lines.length * LH + PAD_Y * 2;
   }
 
-  const blockH = nameH + bubbleH + 14;
+  // 图片放大时，多出来的高度也计入占位，让画面整体上移腾出空间
+  const zImg = (m.kind === 'image') ? (zoom || 1) : 1;
+  const blockH = nameH + bubbleH + 14 + (zImg > 1 ? Math.round(bubbleH * (zImg - 1)) : 0);
   if (dry) return blockH;
 
   // 时间/系统消息会把基线改成 middle，这里统一复位，避免气泡文字跟着跑偏
@@ -1273,6 +1339,15 @@ function block(ctx, m, y, dry, T) {
     }
   } else if (m.kind === 'image') {
     const img = m.imgKey ? MSG_IMAGES.get(m.imgKey) : null;
+    // 他人发的图片：播放时短暂放大，让观众看清画面内容
+    const z = zoom || 1;
+    ctx.save();
+    if (z !== 1) {
+      // 以左上角为锚点放大：往右、往下长，占位已预留，不会压住别人
+      ctx.translate(bx, by);
+      ctx.scale(z, z);
+      ctx.translate(-bx, -by);
+    }
     if (img && img.complete && img.naturalWidth) {
       ctx.save();
       rr(ctx, bx, by, bubbleW, bubbleH, 6);
@@ -1301,6 +1376,7 @@ function block(ctx, m, y, dry, T) {
       ctx.fillText('图片', ix, by + bubbleH - 10);
       ctx.textAlign = 'left';
     }
+    ctx.restore();
   } else if (m.kind === 'location') {
     // 白卡片 + 缩略图（两侧都是白卡，跟真机一致）
     ctx.fillStyle = T.card;
@@ -1593,6 +1669,8 @@ function lastPreview(c, limit) {
     const m = msgs[i];
     if (!m || m.type === 'time') continue;
     if (m.type === 'sys') return m.text || '';
+    if (m.type === 'narr') return '[旁白] ' + (m.text || '');
+    if (m.type === 'narrimg') return '[图片旁白]';
     if (m.type === 'text') return (m.who || '') + ': ' + (m.text || '');
     if (m.type === 'voice') return '[语音]';
     if (m.type === 'image') return '[图片]';
@@ -2328,332 +2406,6 @@ function drawMomentsPage(ctx, T) {
   }
 }
 
-/* ============ 手机主界面 / 相机 ============ */
-const HOME_APPS = [
-  { key: 'wechat',   label: '微信',   color: '#07c160', ch: '微' },
-  { key: 'camera',   label: '相机',   color: '#5b5b5f', ch: '相' },
-  { key: 'phone',    label: '电话',   color: '#34c759', ch: '话' },
-  { key: 'sms',      label: '信息',   color: '#32ade6', ch: '信' },
-  { key: 'photo',    label: '照片',   color: '#ff9f0a', ch: '照' },
-  { key: 'settings', label: '设置',   color: '#8e8e93', ch: '设' },
-  { key: 'clock',    label: '时钟',   color: '#1c1c1e', ch: '钟' },
-  { key: 'notes',    label: '备忘录', color: '#ffd60a', ch: '备' }
-];
-const HOME_DOCK = ['phone', 'sms', 'camera', 'wechat'];
-const ICON_SIZE = 54;
-
-// 桌面图标位置（绘制和点击命中共用）
-function homeLayout() {
-  const cols = 4;
-  const gapX = (W - cols * ICON_SIZE) / (cols + 1);
-  const top = STATUS_H + 52;
-  const rowGap = ICON_SIZE + 32;
-  const out = [];
-  HOME_APPS.forEach((app, i) => {
-    const col = i % cols, row = Math.floor(i / cols);
-    out.push({ app, x: gapX + col * (ICON_SIZE + gapX), y: top + row * rowGap, w: ICON_SIZE, h: ICON_SIZE });
-  });
-  return out;
-}
-function homeDockLayout() {
-  const n = HOME_DOCK.length;
-  const gapX = (W - n * ICON_SIZE) / (n + 1);
-  const dockTop = H - 96;
-  return HOME_DOCK.map((key, i) => ({
-    key,
-    app: HOME_APPS.find(a => a.key === key) || { key, label: key, color: '#555', ch: '?' },
-    x: gapX + i * (ICON_SIZE + gapX),
-    y: dockTop + (84 - ICON_SIZE) / 2,
-    w: ICON_SIZE, h: ICON_SIZE
-  }));
-}
-function drawAppIcon(ctx, x, y, size, app) {
-  const s = size;
-  const r = s * 0.235;
-  const key = app.key;
-  ctx.save();
-  // 底色
-  if (key === 'wechat') {
-    ctx.fillStyle = '#07c160';
-  } else if (key === 'camera') {
-    const g = ctx.createLinearGradient(x, y, x, y + s);
-    g.addColorStop(0, '#6b6b70'); g.addColorStop(1, '#3a3a3e');
-    ctx.fillStyle = g;
-  } else if (key === 'phone') {
-    const g = ctx.createLinearGradient(x, y, x, y + s);
-    g.addColorStop(0, '#4cd964'); g.addColorStop(1, '#2fb543');
-    ctx.fillStyle = g;
-  } else if (key === 'sms') {
-    const g = ctx.createLinearGradient(x, y, x, y + s);
-    g.addColorStop(0, '#5ac8fa'); g.addColorStop(1, '#1a9bf5');
-    ctx.fillStyle = g;
-  } else if (key === 'photo') {
-    ctx.fillStyle = '#ffffff';
-  } else if (key === 'settings') {
-    const g = ctx.createLinearGradient(x, y, x, y + s);
-    g.addColorStop(0, '#b6b6bb'); g.addColorStop(1, '#7d7d82');
-    ctx.fillStyle = g;
-  } else if (key === 'clock') {
-    ctx.fillStyle = '#111114';
-  } else if (key === 'notes') {
-    ctx.fillStyle = '#ffffff';
-  } else {
-    ctx.fillStyle = app.color || '#555';
-  }
-  rr(ctx, x, y, s, s, r);
-  ctx.fill();
-
-  const cx = x + s / 2, cy = y + s / 2;
-
-  if (key === 'wechat') {
-    // 两个白色对话气泡
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.ellipse(cx - s * 0.10, cy - s * 0.02, s * 0.235, s * 0.195, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(cx + s * 0.17, cy - s * 0.15, s * 0.165, s * 0.14, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 气泡上的小眼睛
-    ctx.fillStyle = '#07c160';
-    [[-0.16, -0.05], [-0.04, -0.05]].forEach(p => {
-      ctx.beginPath();
-      ctx.arc(cx + s * p[0], cy + s * p[1], s * 0.032, 0, Math.PI * 2);
-      ctx.fill();
-    });
-    ctx.beginPath();
-    ctx.arc(cx + s * 0.11, cy - s * 0.17, s * 0.024, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(cx + s * 0.22, cy - s * 0.17, s * 0.024, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (key === 'camera') {
-    // 镜头：双圆 + 左上取景窗
-    ctx.strokeStyle = '#f2f2f5';
-    ctx.lineWidth = s * 0.055;
-    ctx.beginPath(); ctx.arc(cx, cy + s * 0.02, s * 0.225, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx, cy + s * 0.02, s * 0.095, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = '#f2f2f5';
-    ctx.beginPath(); ctx.arc(cx + s * 0.26, cy - s * 0.27, s * 0.038, 0, Math.PI * 2); ctx.fill();
-    // 顶部小条
-    ctx.fillRect(x + s * 0.30, y + s * 0.115, s * 0.22, s * 0.05);
-  } else if (key === 'phone') {
-    // 白色听筒
-    ctx.fillStyle = '#ffffff';
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(-Math.PI / 4);
-    rr(ctx, -s * 0.075, -s * 0.26, s * 0.15, s * 0.52, s * 0.07);
-    ctx.fill();
-    rr(ctx, -s * 0.26, -s * 0.075, s * 0.52, s * 0.15, s * 0.07);
-    ctx.fill();
-    ctx.restore();
-  } else if (key === 'sms') {
-    // 白色对话气泡
-    ctx.fillStyle = '#ffffff';
-    rr(ctx, x + s * 0.20, y + s * 0.26, s * 0.60, s * 0.40, s * 0.12);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(x + s * 0.36, y + s * 0.64);
-    ctx.lineTo(x + s * 0.30, y + s * 0.78);
-    ctx.lineTo(x + s * 0.48, y + s * 0.66);
-    ctx.closePath();
-    ctx.fill();
-  } else if (key === 'photo') {
-    // 八色花瓣
-    const colors = ['#f8d04a', '#f0a13a', '#ea5b3c', '#d94a8c', '#8a5cd6', '#4a7bf0', '#3ab8d6', '#4cc46a'];
-    for (let i = 0; i < 8; i++) {
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate((Math.PI * 2 / 8) * i);
-      ctx.fillStyle = colors[i];
-      ctx.globalAlpha = 0.9;
-      ctx.beginPath();
-      ctx.ellipse(0, -s * 0.17, s * 0.075, s * 0.135, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath(); ctx.arc(cx, cy, s * 0.075, 0, Math.PI * 2); ctx.fill();
-  } else if (key === 'settings') {
-    // 齿轮
-    ctx.fillStyle = '#ffffff';
-    for (let i = 0; i < 8; i++) {
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate((Math.PI * 2 / 8) * i);
-      rr(ctx, -s * 0.045, -s * 0.30, s * 0.09, s * 0.12, s * 0.02);
-      ctx.fill();
-      ctx.restore();
-    }
-    ctx.beginPath(); ctx.arc(cx, cy, s * 0.20, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#8e8e93';
-    ctx.beginPath(); ctx.arc(cx, cy, s * 0.085, 0, Math.PI * 2); ctx.fill();
-  } else if (key === 'clock') {
-    // 表盘
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath(); ctx.arc(cx, cy, s * 0.34, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#9a9aa0';
-    ctx.lineWidth = s * 0.025;
-    for (let i = 0; i < 12; i++) {
-      const a = (Math.PI * 2 / 12) * i - Math.PI / 2;
-      const r1 = s * 0.28, r2 = s * 0.31;
-      ctx.beginPath();
-      ctx.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
-      ctx.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2);
-      ctx.stroke();
-    }
-    ctx.strokeStyle = '#ff9500';
-    ctx.lineWidth = s * 0.045;
-    ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, cy - s * 0.20); ctx.stroke();
-    ctx.strokeStyle = '#1c1c1e';
-    ctx.lineWidth = s * 0.035;
-    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + s * 0.14, cy + s * 0.05); ctx.stroke();
-    ctx.fillStyle = '#ff9500';
-    ctx.beginPath(); ctx.arc(cx, cy, s * 0.03, 0, Math.PI * 2); ctx.fill();
-  } else if (key === 'notes') {
-    // 黄色顶条 + 横线
-    ctx.fillStyle = '#ffd60a';
-    ctx.fillRect(x, y, s, s * 0.28);
-    ctx.fillStyle = '#e5e5e8';
-    for (let i = 0; i < 3; i++) {
-      ctx.fillRect(x + s * 0.16, y + s * 0.44 + i * s * 0.15, s * 0.68, s * 0.045);
-    }
-  } else {
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold ' + Math.round(s * 0.42) + 'px -apple-system, "PingFang SC", sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(app.ch || '?', cx, cy + 1);
-    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-  }
-  ctx.restore();
-}
-function drawHomePage(ctx, T, t) {
-  T = T || THEME();
-  const wp = S.wallpaper ? getMomentImg(S.wallpaper) : null;
-  if (wp && wp.complete && wp.naturalWidth) {
-    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
-    const s = Math.max(W / wp.naturalWidth, H / wp.naturalHeight);
-    ctx.drawImage(wp, (W - wp.naturalWidth * s) / 2, (H - wp.naturalHeight * s) / 2, wp.naturalWidth * s, wp.naturalHeight * s);
-    ctx.restore();
-  } else {
-    const g = ctx.createLinearGradient(0, 0, W * 0.5, H);
-    g.addColorStop(0, '#1b2230');
-    g.addColorStop(0.55, '#2a3346');
-    g.addColorStop(1, '#12161f');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-  }
-  drawStatusBar(ctx, S.time || '22:00', T, '#ffffff', true);
-
-  homeLayout().forEach(p => {
-    drawAppIcon(ctx, p.x, p.y, p.w, p.app);
-    ctx.fillStyle = 'rgba(255,255,255,.88)';
-    ctx.font = '11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(p.app.label, p.x + p.w / 2, p.y + p.h + 15);
-    ctx.textAlign = 'left';
-  });
-
-  const dockTop = H - 96;
-  ctx.fillStyle = 'rgba(255,255,255,.16)';
-  rr(ctx, 14, dockTop, W - 28, 84, 26);
-  ctx.fill();
-  homeDockLayout().forEach(p => drawAppIcon(ctx, p.x, p.y, p.w, p.app));
-
-  ctx.fillStyle = 'rgba(255,255,255,.75)';
-  rr(ctx, W / 2 - 62, H - 12, 124, 5, 2.5);
-  ctx.fill();
-}
-// 相机取景画面（图片铺满）
-function drawCameraMedia(ctx) {
-  const im = S.camMedia ? getMomentImg(S.camMedia) : null;
-  if (im && im.complete && im.naturalWidth) {
-    const s = Math.max(W / im.naturalWidth, H / im.naturalHeight);
-    const w = im.naturalWidth * s, h = im.naturalHeight * s;
-    ctx.drawImage(im, (W - w) / 2, (H - h) / 2, w, h);
-    return true;
-  }
-  return false;
-}
-function drawCameraPage(ctx, T, t) {
-  T = T || THEME();
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, W, H);
-  if (!drawCameraMedia(ctx)) {
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#0d0f14');
-    g.addColorStop(0.6, '#171b24');
-    g.addColorStop(1, '#0a0c10');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = 'rgba(255,220,150,.12)';
-    [60, 150, 250, 310].forEach((x, i) => {
-      ctx.beginPath();
-      ctx.arc(x, H * 0.42 + i * 14, 10 + i * 4, 0, Math.PI * 2);
-      ctx.fill();
-    });
-    ctx.fillStyle = 'rgba(255,255,255,.55)';
-    ctx.font = '13px -apple-system, "PingFang SC", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('在「相机」页放一张图，这里就是取景画面', W / 2, H * 0.5);
-    ctx.textAlign = 'left';
-  }
-
-  // 手持呼吸感 + 对焦框
-  const rec = (t != null) ? Math.sin(t / 900) * 3 : 0;
-  ctx.strokeStyle = 'rgba(255,220,90,.9)';
-  ctx.lineWidth = 1.4;
-  const fx = W / 2 - 34 + rec, fy = H * 0.44 - 34;
-  [[fx, fy], [fx + 68, fy], [fx, fy + 68], [fx + 68, fy + 68]].forEach((p, i) => {
-    const dx = (i % 2 ? -1 : 1) * 9, dy = (i > 1 ? -1 : 1) * 9;
-    ctx.beginPath();
-    ctx.moveTo(p[0] + dx, p[1]);
-    ctx.lineTo(p[0], p[1]);
-    ctx.lineTo(p[0], p[1] + dy);
-    ctx.stroke();
-  });
-
-  drawStatusBar(ctx, S.time || '22:00', T, '#ffffff', true);
-  ctx.fillStyle = 'rgba(0,0,0,.35)';
-  rr(ctx, 14, STATUS_H + 6, 52, 22, 11); ctx.fill();
-  ctx.fillStyle = '#ffd60a';
-  ctx.font = '11px -apple-system, "PingFang SC", sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('闪光灯', 40, STATUS_H + 18);
-  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-
-  const by = H - 108;
-  ctx.fillStyle = 'rgba(255,255,255,.85)';
-  rr(ctx, 28, by - 4, 34, 34, 6); ctx.fill();
-  if (S.camMedia) {
-    try {
-      const im = getMomentImg(S.camMedia);
-      if (im && im.complete && im.naturalWidth) {
-        ctx.save(); ctx.beginPath(); rr(ctx, 28, by - 4, 34, 34, 6); ctx.clip();
-        const s = Math.max(34 / im.naturalWidth, 34 / im.naturalHeight);
-        ctx.drawImage(im, 28 + (34 - im.naturalWidth * s) / 2, by - 4 + (34 - im.naturalHeight * s) / 2, im.naturalWidth * s, im.naturalHeight * s);
-        ctx.restore();
-      }
-    } catch (e) {}
-  }
-  ctx.strokeStyle = 'rgba(255,255,255,.9)';
-  ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.arc(W / 2, by + 13, 27, 0, Math.PI * 2); ctx.stroke();
-  ctx.fillStyle = 'rgba(255,255,255,.92)';
-  ctx.beginPath(); ctx.arc(W / 2, by + 13, 21, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,.75)';
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(W - 46, by + 13, 13, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(W - 52, by + 9); ctx.lineTo(W - 46, by + 13); ctx.lineTo(W - 52, by + 17); ctx.stroke();
-
-  ctx.fillStyle = 'rgba(255,255,255,.7)';
-  rr(ctx, W / 2 - 62, H - 12, 124, 5, 2.5);
-  ctx.fill();
-}
-
 function drawContactsPage(ctx, T) {
   T = T || THEME();
   drawStatusBar(ctx, S.time || '22:00', T);
@@ -2853,7 +2605,24 @@ let preloadFirstMsg = false;                 // 跳转后第一条消息直接�
 const NOTIF_DUR = 950;                       // 通知横幅停留毫秒
 const MOMENTS_DWELL = 2600;                  // 剧情里「打开朋友圈」停留毫秒
 const DISCOVER_DWELL = 1100;                  // 剧情里「发现页」停留毫秒
-const APP_DWELL = 2200;                      // 剧情里「桌面 / 相机」停留毫秒
+const ZOOM_DUR = 1500;                        // 图片放大：放大 → 停留 → 复原 的总时长
+const ZOOM_AMP = 0.18;                        // 旁白图片最大放大 1.18 倍
+const ZOOM_AMP_IMG = 0.12;                    // 聊天里的图片放大得含蓄一点
+const ZOOM_EXTRA = 900;                       // 图片类消息在时间轴上额外的停留时间
+// 0 → 1 → 0 的放大曲线：前 22% 放大，中间保持，最后复原
+function zoomCurve(p) {
+  if (p <= 0 || p >= 1) return 0;
+  const IN = 0.22, HOLD = 0.74;
+  if (p < IN) return easeOut(p / IN);
+  if (p < HOLD) return 1;
+  return 1 - easeOut((p - HOLD) / (1 - HOLD));
+}
+// 哪些消息播放时要放大：图片旁白、别人发的图片；表情和本人图片不放大
+function needsZoom(m) {
+  if (!m) return false;
+  if (m.t === 'narrimg') return true;
+  return m.t === 'left' && m.kind === 'image';
+}
 
 /* ============ 真人打字：键盘 + 音效 ============ */
 function ensureAudio() {
@@ -3149,6 +2918,8 @@ function drawCandidates(ctx, top, chars, T) {
 function toRender(m) {
   if (m.type === 'time') return { t: 'time', text: m.time || '00:00' };
   if (m.type === 'sys') return { t: 'sys', text: m.text || '' };
+  if (m.type === 'narr') return { t: 'narr', text: (m.text || '') };
+  if (m.type === 'narrimg') return { t: 'narrimg', imgKey: m.imgKey || '' };
   const right = m.who === S.self;
   const base = { t: right ? 'right' : 'left', name: m.who || S.self };
   if (m.type === 'voice') {
@@ -3180,7 +2951,11 @@ function getData() {
       // _i 记住它在编辑器里是第几条：getData 会过滤空文本，索引会错位，框选必须按原下标算
       msgs: S.msgs
         .map((m, i) => Object.assign(toRender(m), { _i: i }))
-        .filter(m => m.t === 'time' || m.t === 'sys' || m.kind !== 'text' || m.text.trim())
+        .filter(m => {
+          if (m.t === 'time' || m.t === 'sys') return true;
+          if (m.t === 'narr') return !!(m.text || '').trim();   // 空旁白不占画面
+          return m.kind !== 'text' || m.text.trim();
+        })
     };
   }
   let title = (S.title || '微信群聊').trim();
@@ -3262,6 +3037,7 @@ function buildSchedule() {
     out.push(t);               // schedule[i] = 气泡出现时刻
     typeMsArr.push(typeMs);
     t += (980 + Math.random() * 520) * k;   // 到下一条的间隔
+    if (needsZoom(m)) t += ZOOM_EXTRA * k;  // 图片要放大，多停一会儿让观众看清
   });
   schedule = out;
   scheduleTypeMs = typeMsArr;
@@ -3377,19 +3153,6 @@ function render(t) {
     drawNotif(ctx, T);
     return;
   }
-  // 手机主界面（桌面）
-  if (S.view === 'home') {
-    drawHomePage(ctx, T, t);
-    drawNotif(ctx, T);
-    return;
-  }
-  // 相机
-  if (S.view === 'camera') {
-    drawCameraPage(ctx, T, t);
-    drawNotif(ctx, T);
-    return;
-  }
-
   drawChat(ctx, T, t, live);
   drawNotif(ctx, T);
 }
@@ -3440,7 +3203,7 @@ function drawChat(ctx, T, t, live) {
   // 当前该显示哪些消息、各自淡入到什么程度
   const items = [];
   viewMsgs.forEach((m, i) => {
-    if (i < viewStatic) { items.push({ m, p: 1 }); return; }
+    if (i < viewStatic) { items.push({ m, p: 1, z: 1 }); return; }
     let p = 1;
     if (live) {
       const st = schedule[i] || 0;
@@ -3449,7 +3212,14 @@ function drawChat(ctx, T, t, live) {
       if (t < fadeStart) return;
       p = Math.min(1, (t - fadeStart) / (isTyping ? KB_OUT : 240));
     }
-    items.push({ m, p });
+    // 图片旁白 / 别人发的图片：出现后短暂放大
+    let z = 1;
+    if (live && needsZoom(m)) {
+      const st = schedule[i] || 0;
+      const amp = (m.t === 'narrimg') ? ZOOM_AMP : ZOOM_AMP_IMG;
+      if (st >= 100 && t >= st) z = 1 + amp * zoomCurve((t - st) / ZOOM_DUR);
+    }
+    items.push({ m, p, z });
   });
 
   // 下一条消息出现前先冒「正在输入」，本身也占一行，跟着一起往上滚
@@ -3461,7 +3231,7 @@ function drawChat(ctx, T, t, live) {
     if (idx < viewMsgs.length) {
       const st = schedule[idx] || 0;
       const nm = viewMsgs[idx];
-      if (st > 0 && nm.t !== 'time' && nm.t !== 'sys' && !(scheduleTypeMs[idx] || 0) && t > st - 820 && t < st) {
+      if (st > 0 && nm.t !== 'time' && nm.t !== 'sys' && nm.t !== 'narr' && nm.t !== 'narrimg' && !(scheduleTypeMs[idx] || 0) && t > st - 820 && t < st) {
         typing = { prog: (t - (st - 820)) / 820, right: nm.t === 'right' };
       }
     }
@@ -3469,7 +3239,7 @@ function drawChat(ctx, T, t, live) {
 
   let total = typing ? TYPING_H : 0;
   const heights = items.map(it => {
-    const h = block(ctx, it.m, 0, true, T);
+    const h = block(ctx, it.m, 0, true, T, it.z);
     total += h;
     return h;
   });
@@ -3495,7 +3265,7 @@ function drawChat(ctx, T, t, live) {
   items.forEach((it, i) => {
     const dy = (1 - it.p) * 16;
     ctx.globalAlpha = it.p;
-    block(ctx, it.m, y + dy, false, T);
+    block(ctx, it.m, y + dy, false, T, it.z);
     ctx.globalAlpha = 1;
     y += heights[i];
   });
@@ -3519,73 +3289,6 @@ function drawChat(ctx, T, t, live) {
 }
 
 /* ============ 进入/返回群聊的滑动转场动画 ============ */
-/* ============ 打开 / 关闭 App 的缩放转场（iOS 风格） ============ */
-let appTrans = null;
-let appTransRAF = false;
-function findIconRect(appKey) {
-  const all = homeLayout().concat(homeDockLayout());
-  const hit = all.find(p => p.app && p.app.key === appKey);
-  return hit ? { x: hit.x, y: hit.y, w: hit.w, h: hit.h } : { x: W / 2 - 27, y: H / 2 - 27, w: 54, h: 54 };
-}
-// dir: 'open' 从图标放大到全屏 / 'close' 从全屏缩回图标
-function startAppTrans(appKey, dir, done) {
-  appTrans = { appKey, dir, rect: findIconRect(appKey), t0: performance.now(), dur: 340, done: done || null };
-  if (!appTransRAF) { appTransRAF = true; requestAnimationFrame(appTransLoop); }
-}
-function appTransLoop() {
-  if (!appTrans) { appTransRAF = false; return; }
-  const p = Math.min(1, (performance.now() - appTrans.t0) / appTrans.dur);
-  renderAppTrans(p);
-  if (p < 1) { requestAnimationFrame(appTransLoop); return; }
-  const done = appTrans.done;
-  appTrans = null; appTransRAF = false;
-  if (done) done(); else render(null);
-}
-function renderAppTrans(p) {
-  const cv = document.getElementById('cv');
-  if (cv.width !== W * DPR || cv.height !== H * DPR) { cv.width = W * DPR; cv.height = H * DPR; }
-  cv.style.aspectRatio = W + ' / ' + H;
-  const ctx = cv.getContext('2d');
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left'; ctx.globalAlpha = 1;
-  const T = THEME();
-
-  const e = easeOut(p);
-  const isOpen = appTrans.dir === 'open';
-
-  // 桌面：打开时轻微后退 + 变暗；关闭时恢复
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, W, H);
-  const homeScale = isOpen ? (1 - 0.07 * e) : (0.93 + 0.07 * e);
-  const homeAlpha = isOpen ? (1 - 0.30 * e) : (0.70 + 0.30 * e);
-  ctx.save();
-  ctx.globalAlpha = homeAlpha;
-  ctx.translate(W / 2, H / 2);
-  ctx.scale(homeScale, homeScale);
-  ctx.translate(-W / 2, -H / 2);
-  drawHomePage(ctx, T, null);
-  ctx.restore();
-  ctx.globalAlpha = 1;
-
-  // App 页：从下方滑入 / 向下滑出
-  const yOff = isOpen ? H * (1 - e) : H * e;
-  ctx.save();
-  ctx.translate(0, yOff);
-  ctx.fillStyle = T.page;
-  ctx.fillRect(0, 0, W, H);
-  if (appTrans.appKey === 'camera') drawCameraPage(ctx, T, null);
-  else drawListPage(ctx, T);
-  ctx.restore();
-
-  // 上沿阴影，滑动更有层次
-  const shadowY = isOpen ? yOff : yOff;
-  const g = ctx.createLinearGradient(0, shadowY - 22, 0, shadowY);
-  g.addColorStop(0, 'rgba(0,0,0,0)');
-  g.addColorStop(1, 'rgba(0,0,0,.30)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, shadowY - 22, W, 22);
-}
-
 function startTrans(mode, done, dur) {
   trans = { mode, t0: performance.now(), dur: dur || 280, done: done || null };
   if (!transRAF) { transRAF = true; requestAnimationFrame(transLoop); }
@@ -3683,6 +3386,8 @@ function pressFlash(rect, done, delay) {
 function msgPreviewText(m) {
   if (!m) return '';
   if (m.type === 'sys') return m.text || '';
+  if (m.type === 'narr') return '[旁白] ' + (m.text || '');
+  if (m.type === 'narrimg') return '[图片旁白]';
   if (m.type === 'text') return (m.who || '') + ': ' + (m.text || '');
   if (m.type === 'voice') return '[语音]';
   if (m.type === 'image') return '[图片]';
@@ -3704,6 +3409,7 @@ function firstOtherMsg(convo) {
     const m = msgs[i];
     if (!m || m.type === 'time') continue;
     if (m.type === 'sys') return null;
+    if (m.type === 'narr' || m.type === 'narrimg') continue;   // 旁白不是发言，不弹通知
     if (m.who && m.who !== S.self) return { text: msgPreviewText(m) };
     return null;   // 第一条内容消息是本人发的 → 不弹
   }
@@ -3758,32 +3464,6 @@ function drawNotif(ctx, T) {
 
 // 画布点击：列表页点会话进入，聊天页点顶部〈返回列表
 function handleTap(x, y) {
-  // ===== 手机桌面：点图标打开对应 App =====
-  if (S.view === 'home') {
-    const all = homeLayout().concat(homeDockLayout());
-    for (let i = 0; i < all.length; i++) {
-      const p = all[i];
-      if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h + 18) {
-        const key = p.app.key;
-        if (key === 'wechat') {
-          startAppTrans('wechat', 'open', () => { S.view = 'list'; saveState(); render(null); });
-        } else if (key === 'camera') {
-          startAppTrans('camera', 'open', () => { S.view = 'camera'; saveState(); render(null); });
-        } else {
-          toast('「' + p.app.label + '」还没做，先放一放');
-        }
-        return;
-      }
-    }
-    return;
-  }
-  // ===== 底部 Home 指示条：退回桌面（微信各页 / 相机都支持）=====
-  if (y >= H - 22 && (S.view === 'chat' || S.view === 'list' || S.view === 'contacts' || S.view === 'discover' || S.view === 'moments' || S.view === 'camera')) {
-    const backKey = S.view === 'camera' ? 'camera' : 'wechat';
-    startAppTrans(backKey, 'close', () => { S.view = 'home'; saveState(); render(null); });
-    return;
-  }
-
   // 底部菜单栏点击：微信 / 通讯录 / 发现 / 我
   if (y >= H - TABBAR_H - HOME_H && (S.view === 'list' || S.view === 'contacts' || S.view === 'discover' || S.view === 'moments')) {
     const tab = Math.floor(x / (W / 4));
@@ -3905,10 +3585,6 @@ function buildTimeline() {
   (S.openMoments || []).forEach((a, i) => {
     segs.push({ kind: 'moments', time: a.time || '12:00', action: a, idx: i });
   });
-  // 「回桌面 / 打开相机 / 打开微信」行动
-  (S.openApps || []).forEach((a, i) => {
-    segs.push({ kind: 'app', time: a.time || '12:00', action: a, idx: i });
-  });
   // 「按任意键开始」指令
   (S.waitKeys || []).forEach((a, i) => {
     segs.push({ kind: 'wait', time: a.time || '12:00', action: a, idx: i });
@@ -3945,7 +3621,6 @@ function buildTimeline() {
 function segKey(seg) {
   if (!seg) return '';
   if (seg.kind === 'moments') return 'm' + seg.idx;
-  if (seg.kind === 'app') return 'a' + seg.idx;
   if (seg.kind === 'wait') return 'w' + seg.idx;
   if (seg.kind === 'post') return 'p' + seg.idx;
   return 'c' + seg.convo + '_' + seg.end;
@@ -3957,6 +3632,7 @@ function segmentOtherMsg(seg) {
     const m = seg.msgs[i];
     if (!m) continue;
     if (m.type === 'sys') return null;
+    if (m.type === 'narr' || m.type === 'narrimg') continue;   // 旁白不是发言
     if (m.who && m.who !== S.self) return msgPreviewText(m);
     return null;
   }
@@ -4091,19 +3767,6 @@ function enterSegment(i, fromList) {
     render(null);
     return;
   }
-  if (seg.kind === 'app') {
-    // 回桌面 / 打开相机 / 打开微信：用 iOS 那样的缩放转场
-    const a = seg.action || {};
-    const target = a.app || 'home';
-    const toView = target === 'camera' ? 'camera' : (target === 'home' ? 'home' : 'list');
-    const iconKey = toView === 'camera' ? 'camera' : 'wechat';
-    const dir = toView === 'home' ? 'close' : 'open';
-    S.view = toView;
-    scriptPhase = 'app';
-    scriptPhaseStart = performance.now();
-    startAppTrans(iconKey, dir, () => { render(null); });
-    return;
-  }
   if (seg.kind === 'moments') {
     if (S.view === 'moments') {
       scriptPhase = 'moments';
@@ -4157,7 +3820,6 @@ function goNextSegment(my) {
   const next = tlSegs[tlIndex];
   scriptStatusTime = next.time || '';   // 状态栏时间跟着下一段走
   if (next.kind === 'moments') { enterSegment(tlIndex, false); return; }
-  if (next.kind === 'app') { enterSegment(tlIndex, false); return; }
   if (next.kind === 'post') { enterSegment(tlIndex, false); return; }
   if (next.kind === 'wait') { enterSegment(tlIndex, false); return; }
   if (S.view === 'chat' && next.convo === S.curConvo) {
@@ -4553,9 +4215,6 @@ function scriptLoop(my) {
           }
         }
       }
-    } else if (scriptPhase === 'app') {
-      render(null);   // 桌面 / 相机 / 微信
-      if (dt >= APP_DWELL) goNextSegment(my);
     } else if (scriptPhase === 'waitKey') {
       render(null);
       drawWaitKeyOverlay();
@@ -5733,7 +5392,7 @@ async function loadMsgImages() {
 /* ============ 群信息 / 成员管理 ============ */
 const S = {
   title: '', time: '22:00', members: ['我'], self: '我',
-  msgs: [],     // 结构化消息：[{type:'text'|'voice'|'image'|'location'|'redpacket'|'transfer'|'file'|'contact'|'link'|'call'|'sticker'|'fail'|'sys'|'time', who, text, sec, time, amount, note, status, ckind, state, dur, imgKey}]
+  msgs: [],     // 结构化消息：[{type:'text'|'voice'|'image'|'location'|'redpacket'|'transfer'|'file'|'contact'|'link'|'call'|'sticker'|'fail'|'sys'|'time'|'narr'|'narrimg', who, text, sec, time, amount, note, status, ckind, state, dur, imgKey}]
   // 播放范围：框前的消息静态保留、框内逐条弹出、框后不出现；to = -1 表示到最后一条
   rangeFrom: 0, rangeTo: -1,
   lastTo: -1,   // 上次「录制」录到第几条，供「从上次录的继续」一键续录
@@ -5742,20 +5401,16 @@ const S = {
   typingFx: true,     // 本人消息模拟真人打字（键盘+音效）
   convos: [],         // 多会话：每个会话的群名/成员/消息/播放范围
   curConvo: 0,        // 当前正在编辑的会话下标
-  view: 'chat',       // 画布视图：'chat' | 'list' | 'contacts' | 'discover' | 'moments' | 'home' | 'camera'
+  view: 'chat',       // 画布视图：'chat' | 'list' | 'contacts' | 'discover' | 'moments'
   script: [],          // 剧情脚本：依次进入哪些会话（存会话下标）
   moments: [],        // 朋友圈：[{id, who, text, imgs:[], loc, time, likes:[], comments:[{who,text}], likedByMe}]
   momentBg: '',       // 朋友圈背景图（base64）
   openMoments: [],    // 时间线里的「打开朋友圈」行动：[{time:'12:00'}]
   tlOrder: {},        // 同一时间点内的先后顺序：{ '12:00': [段key, ...] }
   tlSeq: [],          // 指令流的整体顺序（段key 数组）；有它时播放完全按这个顺序走
-  openApps: [],       // 时间线里的「回桌面 / 打开相机」行动：[{time:'12:00', app:'home'|'camera'|'wechat'}]
   waitKeys: [],       // 「按任意键开始」指令：[{time:'12:00'}]
   postMoments: [],    // 本人发朋友圈：[{time, text, img, likes:[{who,time}], comments:[{who,text,reply,time}]}]
-  characters: [],     // 全局角色表：[{id, name, avatarKey}]  —— 阶段 1
-  camMedia: '',       // 相机取景画面（图片 base64）
-  camMediaType: '',   // 'image' | 'video'
-  wallpaper: ''       // 手机主界面壁纸（base64，留空用渐变）
+  characters: []      // 全局角色表：[{id, name, avatarKey}]  —— 阶段 1
 };
 const AVABLOBS = new Map();          // 昵称 -> 原始文件，改名时用来迁移
 
@@ -5946,20 +5601,16 @@ function applyStateObject(o) {
     } else {
       S.convos = [];
     }
-    if (typeof o.view === 'string' && (o.view === 'list' || o.view === 'chat' || o.view === 'contacts' || o.view === 'discover' || o.view === 'moments' || o.view === 'home' || o.view === 'camera')) S.view = o.view;
+    if (typeof o.view === 'string' && (o.view === 'list' || o.view === 'chat' || o.view === 'contacts' || o.view === 'discover' || o.view === 'moments')) S.view = o.view;
     if (Array.isArray(o.script)) S.script = o.script.filter(x => Number.isInteger(+x));
     if (Array.isArray(o.moments)) S.moments = o.moments.filter(m => m && typeof m === 'object');
     if (typeof o.momentBg === 'string') S.momentBg = o.momentBg;
     if (Array.isArray(o.openMoments)) S.openMoments = o.openMoments.filter(a => a && typeof a === 'object');
-    if (Array.isArray(o.openApps)) S.openApps = o.openApps.filter(a => a && typeof a === 'object');
     if (Array.isArray(o.waitKeys)) S.waitKeys = o.waitKeys.filter(a => a && typeof a === 'object');
     if (Array.isArray(o.postMoments)) S.postMoments = o.postMoments.filter(a => a && typeof a === 'object');
     if (o.tlOrder && typeof o.tlOrder === 'object') S.tlOrder = o.tlOrder;
     if (Array.isArray(o.tlSeq)) S.tlSeq = o.tlSeq.filter(k => typeof k === 'string');
     if (Array.isArray(o.characters)) S.characters = o.characters.filter(c => c && c.id && c.name);
-    if (typeof o.camMedia === 'string') S.camMedia = o.camMedia;
-    if (typeof o.camMediaType === 'string') S.camMediaType = o.camMediaType;
-    if (typeof o.wallpaper === 'string') S.wallpaper = o.wallpaper;
     // 自己一定在成员里，且只出现一次
     if (!S.members.includes(S.self)) S.members.push(S.self);
   } catch (e) {}
@@ -6015,8 +5666,8 @@ function moveTlSeg(seg, dir) {
   renderTimeline();
 }
 function editTlSeg(seg) {
-  if (seg.kind === 'app' || seg.kind === 'moments') {
-    const a = (seg.kind === 'app' ? S.openApps : S.openMoments)[seg.idx];
+  if (seg.kind === 'moments') {
+    const a = S.openMoments[seg.idx];
     if (!a) return;
     const t = prompt('时间：', a.time || '12:00');
     if (t === null) return;
@@ -6056,7 +5707,7 @@ function renderTimeline() {
   if (note) note.textContent = '共 ' + segs.length + ' 条 · 从上往下播放';
   segs.forEach((seg, i) => {
     const it = document.createElement('div');
-    it.className = 'tlitem' + (seg.kind === 'app' ? ' k-app' : seg.kind === 'moments' ? ' k-moments' : seg.kind === 'wait' ? ' k-wait' : '');
+    it.className = 'tlitem' + (seg.kind === 'moments' ? ' k-moments' : seg.kind === 'wait' ? ' k-wait' : '');
     const t = document.createElement('div'); t.className = 'tlt'; t.textContent = seg.time || '--:--';
     if (seg.kind === 'moments') {
       const a = seg.action || {};
@@ -6078,28 +5729,6 @@ function renderTimeline() {
         saveState();
         renderTimeline();
         toast('已删除「打开朋友圈」');
-      };
-      it.appendChild(mkEditBtn(seg));
-      it.appendChild(del);
-    } else if (seg.kind === 'app') {
-      const a = seg.action || {};
-      const appName = a.app === 'camera' ? '打开相机' : (a.app === 'home' ? '回到手机桌面' : '打开微信');
-      const n = document.createElement('div'); n.className = 'tlc'; n.textContent = appName;
-      const p = document.createElement('div'); p.className = 'tlp';
-      p.textContent = a.app === 'camera' ? (S.camMedia ? '取景画面已设置' : '（还没放相机画面）')
-        : (a.app === 'home' ? '从 App 退回桌面' : '回到聊天列表');
-      it.append(t, n, p);
-      it.title = appName;
-      const del = document.createElement('span');
-      del.className = 'tldel';
-      del.textContent = '×';
-      del.title = '删除这一步';
-      del.onclick = (e) => {
-        e.stopPropagation();
-        S.openApps.splice(seg.idx, 1);
-        saveState();
-        renderTimeline();
-        toast('已删除「' + appName + '」');
       };
       it.appendChild(mkEditBtn(seg));
       it.appendChild(del);
@@ -6817,10 +6446,12 @@ function lastWho() {
 }
 
 function addMsg(type) {
-  pushHistory(type === 'time' ? '新增时间分隔' : '新增消息');
+  const isNarr = (type === 'narr' || type === 'narrimg');
+  pushHistory(type === 'time' ? '新增时间分隔' : isNarr ? '新增旁白' : '新增消息');
   const m = { type: type || 'text', who: lastWho(), text: '', sec: 4, sub: '' };
   if (type === 'time') { m.time = nextTime(); delete m.who; }
   if (type === 'sys') { m.text = '撤回了一条消息'; delete m.who; }
+  if (isNarr) { delete m.who; }
   S.msgs.push(m);
   saveState();
   renderMsgs();
@@ -6854,7 +6485,8 @@ function msgCard(m, i) {
   el.className = 'mcard'
     + (m.type === 'time' ? ' tcard' : '')
     + (m.type === 'sys' ? ' scard' : '')
-    + (m.who && m.who === S.self ? ' self' : '');
+    + (m.type === 'narr' || m.type === 'narrimg' ? ' ncard' : '')
+    + ((m.type !== 'narr' && m.type !== 'narrimg' && m.who && m.who === S.self) ? ' self' : '');
 
   const head = document.createElement('div');
   head.className = 'mhead';
@@ -6877,6 +6509,24 @@ function msgCard(m, i) {
     lbl.className = 'mlbl';
     lbl.textContent = '系统提示（居中灰字）';
     head.appendChild(lbl);
+  } else if (m.type === 'narr' || m.type === 'narrimg') {
+    const lbl = document.createElement('span');
+    lbl.className = 'mlbl';
+    lbl.textContent = '旁白（居中灰字）';
+    const ty = document.createElement('select');
+    ty.className = 'mtype';
+    [['narr', '文字'], ['narrimg', '图片']].forEach(([v, l]) => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = l;
+      ty.appendChild(o);
+    });
+    ty.value = m.type;
+    ty.addEventListener('change', () => {
+      pushHistory('改旁白类型');
+      m.type = ty.value;
+      saveState(); renderMsgs(); render(null);
+    });
+    head.append(lbl, ty);
   } else {
     const av = document.createElement('div');
     av.className = 'mav';
@@ -6908,7 +6558,8 @@ function msgCard(m, i) {
     ty.className = 'mtype';
     [['text', '文字'], ['voice', '语音'], ['image', '图片'], ['location', '位置'],
      ['redpacket', '红包'], ['transfer', '转账'], ['file', '文件'], ['contact', '名片'],
-     ['link', '链接'], ['call', '通话'], ['sticker', '表情'], ['fail', '发送失败']].forEach(([v, l]) => {
+     ['link', '链接'], ['call', '通话'], ['sticker', '表情'], ['fail', '发送失败'],
+     ['narr', '旁白（文字）'], ['narrimg', '旁白（图片）']].forEach(([v, l]) => {
       const o = document.createElement('option');
       o.value = v; o.textContent = l;
       ty.appendChild(o);
@@ -6917,6 +6568,8 @@ function msgCard(m, i) {
     ty.addEventListener('change', () => {
       pushHistory('改消息类型');
       m.type = ty.value;
+      // 从旁白切回普通消息时补上发言人，否则卡片里是空的
+      if (m.type !== 'narr' && m.type !== 'narrimg' && m.type !== 'time' && m.type !== 'sys' && !m.who) m.who = lastWho();
       saveState(); renderMsgs(); render(null);
     });
 
@@ -6940,6 +6593,44 @@ function msgCard(m, i) {
   el.appendChild(head);
 
   if (m.type === 'time') return el;
+
+  if (m.type === 'narr') {
+    const ta = document.createElement('textarea');
+    ta.className = 'mtext';
+    ta.rows = 2;
+    ta.value = m.text || '';
+    ta.placeholder = '旁白文字（居中灰字，像小说里的旁白，例如：她看着被吊在窗子下方的戚渊子，眼里闪过一丝寒光）';
+    ta.addEventListener('input', () => { pushHistory('编辑旁白', 'msg:' + i + ':narr'); m.text = ta.value; saveState(); render(null); autoGrow(ta); });
+    el.appendChild(ta);
+    requestAnimationFrame(() => autoGrow(ta));
+    const note = document.createElement('div');
+    note.className = 'mnote';
+    note.textContent = '旁白不带头像和气泡，跟消息一起按时间线顺序弹出';
+    el.appendChild(note);
+    return el;
+  }
+
+  if (m.type === 'narrimg') {
+    const up = document.createElement('button');
+    up.className = 'mini';
+    up.textContent = m.imgKey ? '换一张旁白图' : '上传旁白图';
+    up.addEventListener('click', () => pickMsgImage(i));
+    const rm = document.createElement('button');
+    rm.className = 'mini';
+    rm.textContent = '移除';
+    rm.style.display = m.imgKey ? '' : 'none';
+    rm.addEventListener('click', () => {
+      if (!m.imgKey) return;
+      pushHistory('移除旁白图');
+      dropMsgImage(m.imgKey); MSG_IMAGES.delete(m.imgKey); m.imgKey = '';
+      saveState(); renderMsgs(); render(null);
+    });
+    const note = document.createElement('span');
+    note.className = 'mnote';
+    note.textContent = '图片旁白会在播放时短暂放大，让观众看清';
+    el.appendChild(mrow(up, rm, note));
+    return el;
+  }
 
   if (m.type === 'image') {
     const up = document.createElement('button');
@@ -7106,6 +6797,8 @@ function msgBrief(m, i) {
   let s = '';
   if (m.type === 'time') s = '时间 ' + (m.time || '00:00');
   else if (m.type === 'sys') s = '系统：' + (m.text || '');
+  else if (m.type === 'narr') s = '[旁白] ' + (m.text || '');
+  else if (m.type === 'narrimg') s = '[图片旁白]';
   else if (m.type === 'voice') s = '[语音 ' + (m.sec || 4) + ' 秒] ' + (m.sub || '');
   else if (m.type === 'image') s = '[图片]';
   else if (m.type === 'location') s = '[位置] ' + (m.text || '');
@@ -7210,6 +6903,8 @@ function toText() {
   return S.msgs.map(m => {
     if (m.type === 'time') return '--' + (m.time || '00:00') + '--';
     if (m.type === 'sys') return '系统: ' + (m.text || '');
+    if (m.type === 'narr') return '[旁白] ' + (m.text || '');
+    if (m.type === 'narrimg') return '[旁白图]';
     const who = m.who || S.self;
     if (m.type === 'voice') return who + ': [语音] ' + (m.sec || 4) + (m.sub ? ' ' + m.sub : '');
     if (m.type === 'image') return who + ': [图片]';
@@ -7237,6 +6932,8 @@ function fromText(txt) {
   for (const m of d.msgs) {
     if (m.t === 'time') out.push({ type: 'time', time: m.text });
     else if (m.t === 'sys') out.push({ type: 'sys', text: m.text });
+    else if (m.t === 'narr') out.push({ type: 'narr', text: m.text });
+    else if (m.t === 'narrimg') out.push({ type: 'narrimg' });
     else if (m.kind === 'voice') out.push({ type: 'voice', who: m.name, sec: m.sec, sub: m.text || '' });
     else if (m.kind === 'image') out.push({ type: 'image', who: m.name });
     else if (m.kind === 'location') out.push({ type: 'location', who: m.name, text: m.title });
@@ -7470,7 +7167,7 @@ document.getElementById('gavatarClear').addEventListener('click', async () => {
   toast('已清除群头像');
 });
 
-/* ---------- 相机素材 / 桌面壁纸 ---------- */
+/* ---------- 选图工具 ---------- */
 function pickImageFile(cb) {
   const inp = document.createElement('input');
   inp.type = 'file';
@@ -7484,31 +7181,6 @@ function pickImageFile(cb) {
   };
   inp.click();
 }
-function updateCameraPreview() {
-  const a = document.getElementById('camPrev');
-  if (a) { if (S.camMedia) { a.src = S.camMedia; a.style.opacity = '1'; } else { a.removeAttribute('src'); a.style.opacity = '0.35'; } }
-  const b = document.getElementById('wpPrev');
-  if (b) { if (S.wallpaper) { b.src = S.wallpaper; b.style.opacity = '1'; } else { b.removeAttribute('src'); b.style.opacity = '0.35'; } }
-}
-document.getElementById('camUp').addEventListener('click', () => {
-  pickImageFile(v => { S.camMedia = v; S.camMediaType = 'image'; saveState(); updateCameraPreview(); render(null); toast('相机取景画面已更新'); });
-});
-document.getElementById('camClear').addEventListener('click', () => {
-  S.camMedia = ''; S.camMediaType = ''; saveState(); updateCameraPreview(); render(null); toast('已清除相机画面');
-});
-document.getElementById('wpUp').addEventListener('click', () => {
-  pickImageFile(v => { S.wallpaper = v; saveState(); updateCameraPreview(); render(null); toast('桌面壁纸已更新'); });
-});
-document.getElementById('wpClear').addEventListener('click', () => {
-  S.wallpaper = ''; saveState(); updateCameraPreview(); render(null); toast('已清除桌面壁纸');
-});
-document.getElementById('goHome').addEventListener('click', () => {
-  S.view = 'home';
-  saveState();
-  render(null);
-  toast('已切到手机桌面，点图标打开微信 / 相机');
-});
-updateCameraPreview();
 document.getElementById('gtime').addEventListener('input', e => { pushHistory('改状态栏时间', 'cfg:time'); S.time = e.target.value; saveState(); render(null); });
 document.getElementById('dark').addEventListener('change', e => { pushHistory('切换深色模式'); S.dark = e.target.checked; saveState(); render(null); });
 document.getElementById('typingFx').addEventListener('change', e => { pushHistory('切换真人打字'); S.typingFx = e.target.checked; saveState(); render(null); });
@@ -7563,6 +7235,7 @@ document.getElementById('saveBox').addEventListener('click', e => {
 
 /* ---------- 消息工具栏 ---------- */
 document.getElementById('addmsg').addEventListener('click', () => addMsg('text'));
+document.getElementById('addnarr').addEventListener('click', () => addMsg('narr'));
 document.getElementById('addtime').addEventListener('click', () => addMsg('time'));
 
 /* ---------- 存档 / 读档 ---------- */
@@ -7626,7 +7299,6 @@ function loadProjectFile(file) {
       document.getElementById('dark').checked = S.dark;
       document.getElementById('typingFx').checked = S.typingFx;
       updateConvoAvatarPreview();
-      updateCameraPreview();
       render(null);
       toast('存档已导入：设置和指令都回来了');
     } catch (e) {
